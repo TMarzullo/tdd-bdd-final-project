@@ -30,7 +30,7 @@ from decimal import Decimal
 from unittest import TestCase
 from service import app
 from service.common import status
-from service.models import db, init_db, Product
+from service.models import db, init_db, Product, Category
 from tests.factories import ProductFactory
 
 # Disable all but critical errors during normal test run
@@ -163,9 +163,181 @@ class TestProductRoutes(TestCase):
         response = self.client.post(BASE_URL, data={}, content_type="plain/text")
         self.assertEqual(response.status_code, status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
 
-    #
-    # ADD YOUR TEST CASES HERE
-    #
+    def test_get_product(self):
+        """It should Get a single Product"""
+        # get the id of a product
+        test_product = self._create_products(1)[0]
+        response = self.client.get(f"{BASE_URL}/{test_product.id}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.get_json()
+        self.assertEqual(data["name"], test_product.name)
+
+    def test_get_product_not_found(self):
+        """It should not Get a Product thats not found"""
+        response = self.client.get(f"{BASE_URL}/0")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        data = response.get_json()
+        self.assertIn("was not found", data["message"])
+
+    # ---------- UPDATE (success) ----------
+    def test_update_product(self):
+        """It should Update a Product"""
+        # Create a product first
+        product = self._create_products(1)[0]
+
+        # Prepare an updated payload
+        updated = product.serialize()
+        updated["description"] = "Updated description"
+        updated["price"] = "42.50"                 # payload uses string; model stores Decimal
+        updated["available"] = not product.available
+        updated["category"] = Category.TOOLS.name  # switch category
+
+        # PUT /products/<id>
+        response = self.client.put(f"{BASE_URL}/{product.id}", json=updated)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Verify response body
+        data = response.get_json()
+        self.assertEqual(data["description"], "Updated description")
+        self.assertEqual(Decimal(data["price"]), Decimal("42.50"))
+        self.assertEqual(data["available"], updated["available"])
+        self.assertEqual(data["category"], Category.TOOLS.name)
+
+        # GET back to confirm persisted change
+        response = self.client.get(f"{BASE_URL}/{product.id}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.get_json()
+        self.assertEqual(data["description"], "Updated description")
+        self.assertEqual(Decimal(data["price"]), Decimal("42.50"))
+        self.assertEqual(data["available"], updated["available"])
+        self.assertEqual(data["category"], Category.TOOLS.name)
+
+    # ---------- UPDATE (fail) ----------
+
+    def test_update_product_and_fail(self):
+        """It should not Update a Product that does not exist"""
+        template = ProductFactory()
+        payload = template.serialize()
+        payload["description"] = "Should not matter"
+
+        # Not found
+        response = self.client.put(f"{BASE_URL}/0", json=payload)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        data = response.get_json()
+        self.assertIn("was not found", data["message"])
+
+        # Wrong Content-Type (optional negative)
+        response = self.client.put(f"{BASE_URL}/1", data=payload, content_type="text/plain")
+        self.assertEqual(response.status_code, status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+
+    # ---------- DELETE (success) ----------
+
+    def test_delete_product(self):
+        """It should Delete a Product"""
+        product = self._create_products(1)[0]
+
+        # DELETE /products/<id>
+        response = self.client.delete(f"{BASE_URL}/{product.id}")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+        # Ensure it is gone
+        response = self.client.get(f"{BASE_URL}/{product.id}")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        data = response.get_json()
+        self.assertIn("was not found", data["message"])
+
+    # ---------- DELETE (fail) ----------
+
+    def test_delete_product_and_fail(self):
+        """It should not Delete a Product that does not exist"""
+        response = self.client.delete(f"{BASE_URL}/0")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        data = response.get_json()
+        self.assertIn("was not found", data["message"])
+
+    # ---------- LIST ALL ----------
+
+    def test_list_all_products(self):
+        """It should List all Products"""
+        start_count = self.get_product_count()
+
+        # Create 3 products
+        created = self._create_products(3)
+        self.assertEqual(len(created), 3)
+
+        # GET /products
+        response = self.client.get(BASE_URL)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.get_json()
+        self.assertEqual(len(data), start_count + 3)
+
+        # Verify IDs present
+        returned_ids = {p["id"] for p in data}
+        expected_ids = {p.id for p in created}
+        self.assertTrue(expected_ids.issubset(returned_ids))
+
+    # ---------- LIST BY NAME ----------
+    def test_list_by_name_product(self):
+        """It should List Products by name"""
+        products = self._create_products(4)
+
+        # Choose name from the first product
+        target_name = products[0].name
+
+        # Update one other product to match this name
+        updated = products[1].serialize()
+        updated["name"] = target_name
+        response = self.client.put(f"{BASE_URL}/{products[1].id}", json=updated)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # GET /products?name=<target_name>
+        response = self.client.get(f"{BASE_URL}?name={target_name}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.get_json()
+
+        # Count and verify names
+        expected_count = sum(1 for p in products if p.name == target_name) + 1
+        self.assertEqual(len(data), expected_count)
+        for prod in data:
+            self.assertEqual(prod["name"], target_name)
+
+    # ---------- LIST BY CATEGORY ----------
+    def test_list_by_category_product(self):
+        """It should List Products by category"""
+        products = self._create_products(5)
+
+        # Force two products to a known category via update
+        target_category = Category.FOOD.name
+        for idx in (0, 2):
+            payload = products[idx].serialize()
+            payload["category"] = target_category
+            response = self.client.put(f"{BASE_URL}/{products[idx].id}", json=payload)
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # GET /products?category=<target_category>
+        response = self.client.get(f"{BASE_URL}?category={target_category}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.get_json()
+
+        self.assertTrue(len(data) >= 2)
+        for prod in data:
+            self.assertEqual(prod["category"], target_category)
+
+    # ---------- LIST BY AVAILABILITY ----------
+    def test_list_by_availability_product(self):
+        """It should List Products by availability"""
+        products = self._create_products(6)
+
+        # Flip availability on three products to True
+        for idx in (1, 3, 5):
+            payload = products[idx].serialize()
+            payload["available"] = True
+            response = self.client.put(f"{BASE_URL}/{products[idx].id}", json=payload)
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # GET /products?available=true
+        response = self.client.get(f"{BASE_URL}?available=true")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     ######################################################################
     # Utility functions
