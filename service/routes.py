@@ -97,6 +97,7 @@ def create_products():
 def list_products():
     """
     Lists all Products, optionally filtered by:
+	  - name
       - category: enum name (e.g., TOOLS, FOOD, CLOTHS, HOUSEWARES, AUTOMOTIVE)
       - available: boolean string (true/false, 1/0, yes/no)
     """

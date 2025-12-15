@@ -323,6 +323,12 @@ class TestProductRoutes(TestCase):
         for prod in data:
             self.assertEqual(prod["category"], target_category)
 
+    def test_list_by_invalid_category_product(self):
+        """It should Not List Products with an invalid category"""
+
+        response = self.client.get(f"{BASE_URL}?category=InvalidCategory")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
     # ---------- LIST BY AVAILABILITY ----------
     def test_list_by_availability_product(self):
         """It should List Products by availability"""
